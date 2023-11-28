@@ -293,7 +293,7 @@ def main(args):
         
         # using ema for evaluation
         ema.may_build_model_ema(cfg, model)
-        DetectionCheckpointer(model, **ema.may_get_ema_checkpointer(cfg, model)).load(cfg.train.init_checkpoint)
+        DetectionCheckpointer(model,cfg.train.output_dir, **ema.may_get_ema_checkpointer(cfg, model)).resume_or_load(cfg.train.init_checkpoint,resume=args.resume)
         # Apply ema state for evaluation
         if cfg.train.model_ema.enabled and cfg.train.model_ema.use_ema_weights_for_eval_only:
             ema.apply_model_ema(model)
