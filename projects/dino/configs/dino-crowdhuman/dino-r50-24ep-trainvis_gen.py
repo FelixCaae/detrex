@@ -8,7 +8,7 @@ optimizer = get_config("common/optim.py").AdamW
 lr_multiplier = get_config("common/crowdhuman_schedule.py").lr_multiplier_24ep
 train = get_config("common/train.py").train
 dataloader.train.dataset.names = "crowdhuman_trainvis_generated"
-dataloader.test.dataset.names = "crowdhuman_valvis"
+dataloader.test.dataset.names = "crowdhuman_val"
 model.num_classes = 1
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
@@ -44,5 +44,5 @@ dataloader.train.num_workers = 8
 dataloader.train.total_batch_size = 16
 
 # dump the testing results into output_dir for visualization
-dataloader.evaluator = L(CrowdHumanEvaluator)( dataset_name="${..test.dataset.names}",)
+dataloader.evaluator = L(CrowdHumanEvaluator)( dataset_name="${..test.dataset.names}",visible_flag=False)
 dataloader.evaluator.output_dir = train.output_dir

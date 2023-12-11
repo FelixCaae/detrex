@@ -543,7 +543,7 @@ class Image(object):
             if visible_flag:
                 body_bbox.append((*rb['vbox'][0], body_tag))
             else:
-                body_bbox.appen((*rb['fbox'], body_tag))
+                body_bbox.append((*rb['fbox'], body_tag))
         # head_bbox = np.array(head_bbox)
         # head_bbox[:, 2:4] += head_bbox[:, :2]
         body_bbox = np.array(body_bbox)

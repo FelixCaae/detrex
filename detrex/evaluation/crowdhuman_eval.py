@@ -114,12 +114,14 @@ class CrowdHumanEvaluator(object):
         import logging
         self.images = dict()
         self.eval_mode = mode
-        self.loadData(dataset_name, body_key, head_key)
 
         self._logger = logging.getLogger(__name__)
         self._distributed = distributed
         self._output_dir = output_dir
-
+        self.visible_flag = visible_flag
+        self.loadData(dataset_name, body_key, head_key)
+        
+        
         self._ignNum = sum([self.images[i]._ignNum for i in self.images])
         self._gtNum = sum([self.images[i]._gtNum for i in self.images])
         self._imageNum = len(self.images)
@@ -127,7 +129,8 @@ class CrowdHumanEvaluator(object):
         self.bm_thr = 0.5
         self.conf_thr = 0.05
         self.JI_conf_range = range(0,10)
-        self.visible_flag = visible_flag
+
+        
     def loadData(self, dataset_name , body_key=None, head_key=None):
         metadata = MetadataCatalog.get(dataset_name)
 
@@ -220,6 +223,7 @@ class CrowdHumanEvaluator(object):
         """
         :meth: evaluate by average precision
         """
+        eps = 1e-6
         # calculate general ap score
         def _calculate_map(recall, precision):
             assert len(recall) == len(precision)
@@ -248,8 +252,8 @@ class CrowdHumanEvaluator(object):
                 fp += 1.0
                 dp += item[-1]
             fn = total_gt - tp
-            recall = tp / (tp + fn)
-            precision = tp / (tp + fp)
+            recall = tp / (tp + fn + eps)
+            precision = tp / (tp + fp + eps)
             rpX.append(recall)
             rpY.append(precision)
             fpn.append(fp)

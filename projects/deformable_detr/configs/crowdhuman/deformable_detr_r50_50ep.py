@@ -1,11 +1,12 @@
 from detrex.config import get_config
-from .models.deformable_detr_r50 import model
+from ..models.deformable_detr_r50 import model
 
 dataloader = get_config("common/data/coco_detr.py").dataloader
 lr_multiplier = get_config("common/coco_schedule.py").lr_multiplier_50ep
 optimizer = get_config("common/optim.py").AdamW
 train = get_config("common/train.py").train
-
+dataloader.train.dataset.names = "crowdhuman_train"
+dataloader.test.dataset.names = "crowdhuman_val"
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
 train.output_dir = "./output/deformable_detr_r50_50ep"

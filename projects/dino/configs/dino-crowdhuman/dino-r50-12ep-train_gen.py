@@ -5,19 +5,19 @@ from detectron2.config import LazyCall as L
 # get default config
 dataloader = get_config("common/data/coco_detr.py").dataloader
 optimizer = get_config("common/optim.py").AdamW
-lr_multiplier = get_config("common/crowdhuman_schedule.py").lr_multiplier_24ep
+lr_multiplier = get_config("common/crowdhuman_schedule.py").lr_multiplier_12ep
 train = get_config("common/train.py").train
-dataloader.train.dataset.names = "crowdhuman_train"
+dataloader.train.dataset.names = "crowdhuman_train_generated"
 dataloader.test.dataset.names = "crowdhuman_val"
-
+model.num_classes = 1   
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-train.output_dir = "./output/dino_r50_4scale_24ep_train"
-model.num_classes = 1
+train.output_dir = "./output/dino_r50_4scale_12ep_train_generated"
+
 # max training iterations
-train.max_iter = 937 * 24
+train.max_iter = 937 * 12
 train.eval_period = 3000
-train.log_period = 100
+train.log_period = 20
 train.checkpointer.period = 3000
 
 # gradient clipping for training

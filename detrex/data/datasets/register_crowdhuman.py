@@ -6,7 +6,7 @@ _PREDEFINED_SPLITS_CROWD_HUMAN=[
     ("crowdhuman_train", 'CrowdHuman/train.json', "CrowdHuman/annotation_train.odgt",'CrowdHuman/Images'),
      ("crowdhuman_trainvis", 'CrowdHuman/train_visible.json', "CrowdHuman/annotation_train.odgt",'CrowdHuman/Images'),
     ("crowdhuman_trainvis_generated", 'CrowdHuman/train_visible_gen_thresh01.json', "CrowdHuman/annotation_train.odgt",'CrowdHuman/Images'),
-    
+    ("crowdhuman_train_generated","CrowdHuman/train_generated_full.json","CrowdHuman/annotation_train.odgt","CrowdHuman/Images"),   
     ("crowdhuman_train_partial_001_visible", 'CrowdHuman/partial_annotations/0.01_partial_train.json', "CrowdHuman/annotation_train.odgt",'CrowdHuman/Images'),
     ("crowdhuman_train_partial_01_visible", 'CrowdHuman/partial_annotations/0.1_partial_train.json', "CrowdHuman/annotation_train.odgt",'CrowdHuman/Images'),
       ("crowdhuman_train_partial_05_visible", 'CrowdHuman/partial_annotations/0.5_partial_train.json', "CrowdHuman/annotation_train.odgt",'CrowdHuman/Images'),
