@@ -1,6 +1,6 @@
 from detrex.config import get_config
 from ..models.deformable_detr_r50 import model
-
+from detrex.config import get_config
 dataloader = get_config("common/data/coco_detr.py").dataloader
 lr_multiplier = get_config("common/coco_schedule.py").lr_multiplier_50ep
 optimizer = get_config("common/optim.py").AdamW

@@ -32,7 +32,7 @@ then
      srun -c 8 --mem 50G --gres=gpu:1 python tools/visualize_json_results.py  --output vis_output --input  $3
 elif [ "$2"  = "debug" ] #debug
 then
-    srun -c 8 --mem 16G --gres=gpu:1 python $train  --config-file $3   --num-gpus 1  train.semi.burn_up_step=1  train.max_iter=9990000  dataloader.train.total_batch_size=1 dataloader.test.mapper.is_train=True  #model.criterion.matcher.debug_mode=True
+    srun -c 8 --mem 16G --gres=gpu:1 python $train  --config-file $3   --num-gpus 1  train.semi.burn_up_step=1  train.max_iter=9990000  dataloader.train.total_batch_size=1 dataloader.test.mapper.is_train=True dataloader.train.num_workers=0 #model.criterion.matcher.debug_mode=True
 elif [ "$2"  = "debug_eval" ] #debug
 then
     srun -c 8 --mem 16G --gres=gpu:1 python $train  --config-file $3 --eval --num-gpus 1 --resume   train.max_iter=9990000  dataloader.train.total_batch_size=1   dataloader.test.mapper.is_train=True #model.criterion.matcher.debug_mode=Tru
