@@ -47,7 +47,7 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
-    return loss.mean(1).sum() / num_boxes
+    return loss.sum(1).sum() / num_boxes
 def binary_cross_entropy_loss_with_logits(inputs, pos_weights, neg_weights, avg_factor):
     p = inputs.sigmoid()
     loss = -pos_weights * p.log() - neg_weights * (1-p).log() 
@@ -86,11 +86,14 @@ def get_local_rank( quality, indices):
 def IA_BCE_loss(src_logits,pos_idx_c, src_boxes, target_boxes, indices, avg_factor, alpha,gamma, w_prime=1, ):
     prob = src_logits.sigmoid()
     #init positive weights and negative weights
-    pos_weights = torch.zeros_like(src_logits)
     neg_weights =  prob ** gamma
+    pos_weights = torch.zeros_like(neg_weights)
+
     #ious_scores between matched boxes and GT boxes
     iou_scores = torch.diag(box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy( target_boxes))[0])
+    # iou_scores = torch.diag(generalized_box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy( target_boxes)))
     #t is the quality metric
+    # iou_scores = (1+iou_scores)/2
     t = prob[pos_idx_c]**alpha * iou_scores ** (1-alpha)
     t = torch.clamp(t, 0.01).detach()
     rank = get_local_rank(t, indices)
@@ -100,9 +103,12 @@ def IA_BCE_loss(src_logits,pos_idx_c, src_boxes, target_boxes, indices, avg_fact
     else:
         rank_weight = w_prime
     
-    t = t * rank_weight
-    pos_weights[pos_idx_c] = t 
-    neg_weights[pos_idx_c] = (1 -t)    
+    # t = t * rank_weight
+    # pos_weights[pos_idx_c] = t  * (1 - prob[pos_idx_c])**gamma
+    # neg_weights[pos_idx_c] = (1 -t) * prob[pos_idx_c]** gamma
     
-    loss = -pos_weights * prob.log() - neg_weights * (1-prob).log() 
-    return loss.sum()/avg_factor, rank_weight
+    # loss = -pos_weights * prob.log() - neg_weights * (1-prob).log() 
+
+    targets = torch.zeros_like(neg_weights)
+    targets[pos_idx_c] = 1
+    return sigmoid_focal_loss(src_logits, targets, num_boxes=num_boxes),  rank_weight

@@ -21,4 +21,4 @@ from .transformer import (
 )
 from .aligndetr import AlignDETR
 from .criterions import AlignDETRCriterion
-from .matchers import MixedMatcher
+from .matchers import MixedMatcher,CrossStageMatcher

@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 # from detrex.modeling.criterion import SetCriterion
 from detrex.layers import box_cxcywh_to_xyxy, generalized_box_iou
-from ..losses import  IA_BCE_loss
+from ..losses import  IA_BCE_loss,sigmoid_focal_loss
 from .base_criterion import BaseCriterion
 
 class ManyToOneCriterion(BaseCriterion):
@@ -13,7 +13,7 @@ class ManyToOneCriterion(BaseCriterion):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    def __init__(self, num_classes, matcher, weight_dict, match_number, gamma,alpha,tau):
+    def __init__(self, num_classes, matcher, weight_dict, match_num, gamma,alpha,tau, loss_type='align_loss'):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -30,11 +30,12 @@ class ManyToOneCriterion(BaseCriterion):
         self.matcher = matcher
         self.pos_norm_type = 'softmax'
         self.weight_dict = weight_dict
-        self.match_number = match_number
+        self.match_number = match_num
         #hyper parameters for qal and eqal
         self.gamma = gamma
         self.alpha = alpha   # not the alpha in focal loss!
-        self.initialize_weight_table(match_number,tau)
+        self.loss_type = loss_type
+        self.initialize_weight_table(match_num,tau)
     def initialize_weight_table(self, match_number, tau):
         self.weight_table = torch.zeros(len(match_number), max(match_number))#.cuda()
         for layer, n in enumerate(match_number):
@@ -80,7 +81,7 @@ class ManyToOneCriterion(BaseCriterion):
         device = pred_boxes.device
         if not specify_indices:
             match_n = self.match_number[layer_id] 
-            indices = self.matcher(outputs, targets, match_n)
+            indices = self.matcher(outputs, targets, match_n, layer_id = layer_id)
         else:
             match_n = 1 
             indices = specify_indices
@@ -105,13 +106,19 @@ class ManyToOneCriterion(BaseCriterion):
         else:
             w_prime = 1
         #define some hyper  parameters here 
-        loss_class,loc_weight = IA_BCE_loss(src_logits, pos_idx_c, src_boxes, 
+        if self.loss_type=='align_loss':
+            loss_class,loc_weight = IA_BCE_loss(src_logits, pos_idx_c, src_boxes, 
                                         target_boxes, indices, num_boxes, 
                                         self.alpha, self.gamma, 
                                         w_prime,)
-      
-        losses.update({'loss_class': loss_class})
-        
+
+        else:
+            target_logits = torch.zeros_like(src_logits)
+            target_logits[pos_idx_c] = 1
+            loss_class = sigmoid_focal_loss(src_logits, target_logits, num_boxes)
+            loc_weight = 1
+        losses['loss_class']= loss_class
+
         #compute regression loss
        
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")

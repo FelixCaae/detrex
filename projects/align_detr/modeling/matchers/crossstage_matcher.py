@@ -36,8 +36,8 @@ import torch.nn as nn
 from scipy.optimize import linear_sum_assignment
 
 from detrex.layers.box_ops import box_cxcywh_to_xyxy, generalized_box_iou,box_iou
-
-class MixedMatcher(nn.Module):
+from detrex.utils import get_rank
+class CrossStageMatcher(nn.Module):
     """
     MixedMatcher supports multiple matching startegies as one-to-one matching and one-to-many matching.
     For efficiency reasons, the targets don't include the no_object. Because of this, in general,
@@ -81,9 +81,9 @@ class MixedMatcher(nn.Module):
             "focal_loss_cost",
             'align_cost'
         }, "only support ce loss or focal loss for computing class cost"
-
+        self.staged_ind = {}
     @torch.no_grad()
-    def forward(self, outputs, targets, gt_copy = 1, layer_id=0):
+    def forward(self, outputs, targets, match_num=0, layer_id =0):
         """Forward function for `HungarianMatcher` which performs the matching.
 
         Args:
@@ -107,7 +107,6 @@ class MixedMatcher(nn.Module):
             For each batch element, it holds: `len(index_i) = len(index_j) = min(num_queries, num_target_boxes)`
         """
         bs, num_queries = outputs["pred_logits"].shape[:2]
-
         # We flatten to compute the cost matrices in a batch
         if self.cost_class_type == "ce_cost":
             out_prob = (
@@ -167,13 +166,19 @@ class MixedMatcher(nn.Module):
         #copy gt by repeat cost_matrix 
         indices = []
         for i, c in enumerate(C.split(sizes, -1)):
-            gt_size = c.size(-1)
-            if gt_size > 0:
-                gt_copy = min(int(num_queries * 0.5/ gt_size), gt_copy)
-            src_ind, tgt_ind = linear_sum_assignment(c[i].repeat(1, gt_copy))
-            tgt_ind = tgt_ind % gt_size
-            tgt_ind,ind = torch.as_tensor(tgt_ind, dtype=torch.int64).sort()
-            src_ind = torch.tensor(src_ind,dtype=torch.int64)[ind].view(-1)
-            indices.append([src_ind, tgt_ind])
-        
+            src_ind, tgt_ind = linear_sum_assignment(c[i])
+            tgt_ind = tgt_ind #% gt_size
+            self.staged_ind[layer_id] = [src_ind.tolist(), tgt_ind.tolist()]
+            if layer_id !=6:
+                last_src_ind, last_tgt_ind = self.staged_ind[6]
+            else:
+                last_src_ind, last_tgt_ind = [], [] 
+            # tgt_ind,ind = torch.as_tensor(tgt_ind, dtype=torch.int64).sort()
+            src_ind = src_ind.tolist() + last_src_ind
+            tgt_ind = tgt_ind.tolist() + last_tgt_ind
+            # print(get_rank(), layer_id, src_ind ,tgt_ind, last_src_ind, last_tgt_ind)
+            src_ind = torch.tensor(src_ind,dtype=torch.int64).view(-1)
+            tgt_ind = torch.tensor(tgt_ind,dtype=torch.int64).view(-1)
+            # indices.append([src_ind, tgt_ind, last_src_ind, last_tgt_ind])
+            indices.append([src_ind, tgt_ind])        
         return indices

@@ -14,7 +14,8 @@ from projects.align_detr.modeling import (
     TransformerDecoder,
     Transformer,
     AlignDETRCriterion, 
-    MixedMatcher)
+    MixedMatcher,
+    CrossStageMatcher)
 
 model = L(AlignDETR)(
     backbone=L(ResNet)(

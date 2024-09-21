@@ -25,18 +25,10 @@ from detrex.utils import get_world_size, is_dist_avail_and_initialized
 class TwoStageCriterion(ManyToOneCriterion):
     def __init__(
         self,
-        num_classes,
-        matcher,
-        weight_dict,
-        match_num,
-        gamma,
-        alpha,
-        tau,
         two_stage_binary_cls=False,
+        **kwargs,
     ):
-        super().__init__(
-            num_classes, matcher, weight_dict,match_num,gamma,alpha,tau,
-        )
+        super().__init__(**kwargs)
         self.two_stage_binary_cls = two_stage_binary_cls
 
     def forward(self, outputs, targets):
