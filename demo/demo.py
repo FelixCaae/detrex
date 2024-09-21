@@ -17,7 +17,9 @@ from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import LazyConfig, instantiate
 from detectron2.data.detection_utils import read_image
 from detectron2.utils.logger import setup_logger
-
+import json
+from matplotlib import pyplot as plt
+import matplotlib.patches as patches
 
 # constants
 WINDOW_NAME = "COCO detections"
@@ -33,7 +35,7 @@ def get_parser():
     parser = argparse.ArgumentParser(description="detrex demo for visualizing customized inputs")
     parser.add_argument(
         "--config-file",
-        default="projects/dino/configs/dino_r50_4scale_12ep.py",
+        default="projects/dino/configs/dino-resnet/dino_r50_sgod_20ep.py",
         metavar="FILE",
         help="path to config file",
     )
@@ -42,11 +44,13 @@ def get_parser():
     parser.add_argument(
         "--input",
         nargs="+",
+        default=("test_imgs/*.jpg",),
         help="A list of space separated input images; "
         "or a single glob pattern such as 'directory/*.jpg'",
     )
     parser.add_argument(
         "--output",
+        default='vis_out',
         help="A file or directory to save output visualizations. "
         "If not given, will show output in an OpenCV window.",
     )
@@ -71,19 +75,19 @@ def get_parser():
     parser.add_argument(
         "--metadata_dataset",
         type=str,
-        default="coco_2017_val",
+        default="sgod_dc_instance_val",
         help="The metadata infomation to be used. Default to COCO val metadata.",
     )
     parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.5,
+        default=0.35,
         help="Minimum score for instance predictions to be shown",
     )
     parser.add_argument(
         "--opts",
         help="Modify config options using the command-line",
-        default=None,
+        default=[],
         nargs=argparse.REMAINDER,
     )
     return parser
@@ -134,6 +138,7 @@ if __name__ == "__main__":
         if len(args.input) == 1:
             args.input = glob.glob(os.path.expanduser(args.input[0]))
             assert args.input, "The input path(s) was not found"
+        img_id = 0
         for path in tqdm.tqdm(args.input, disable=not args.output):
             # use PIL, to be consistent with evaluation
             img = read_image(path, format="BGR")
@@ -156,12 +161,34 @@ if __name__ == "__main__":
                 else:
                     assert len(args.input) == 1, "Please specify a directory with args.output"
                     out_filename = args.output
+                # import pdb;pdb.set_trace()
                 visualized_output.save(out_filename)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                for layer_idx in [0,5]:
+                    pts = np.array(json.load(open(f'pts_{layer_idx}.json','r')))
+                    plt.figure(figsize=(10,10))
+                    plt.imshow(img)
+                    #x points and y points
+                    ax = plt.gca()
+                    pts[:,0] = pts[:,0]*img.shape[1]
+                    pts[:,1] = pts[:,1]*img.shape[0]
+                    pts[:,2] = pts[:,2]*img.shape[1]
+                    pts[:,3] = pts[:,3]*img.shape[0]
+                    for rect in pts[::]:
+                        rect_patch= patches.Rectangle((rect[0]-rect[2]/2, rect[1]-rect[3]/2), rect[2], rect[3],
+                        linewidth=1, edgecolor='r', facecolor='none', alpha=0.5)
+                        ax.add_patch(rect_patch)
+                    # plt.rectangle(pts[::2,])
+                    # plt.scatter(, alpha=0.5,s=5,c='r')
+                    plt.savefig(f'vis_out/ref_pts_img_{img_id}_layer_{layer_idx}.jpg')
+                img_id+=1
             else:
                 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
                 cv2.imshow(WINDOW_NAME, visualized_output.get_image()[:, :, ::-1])
                 if cv2.waitKey(0) == 27:
                     break  # esc to quit
+            
     elif args.webcam:
         assert args.input is None, "Cannot have both --input and --webcam!"
         assert args.output is None, "output not yet supported with --webcam!"
