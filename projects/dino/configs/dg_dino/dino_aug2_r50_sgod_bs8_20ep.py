@@ -8,14 +8,13 @@ train = get_config("common/train.py").train
 
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-train.output_dir = "./output/sgod_dinoaug1_adv1_r50_20ep"
+train.output_dir = "./output/sgod_dinoaug2_bs8_dino_r50_20ep"
 dataloader.test.dataset.names="sgod_dc_instance_val"
 # dataloader.test.dataset.names="sgod_nc_instance_val"
 # dataloader.test.dataset.names="sgod_dr_instance_val"
 # dataloader.test.dataset.names="sgod_nr_instance_val"
 # dataloader.test.dataset.names="sgod_df_instance_val"
 
-model.adv_train_loss = True
 model.num_classes = 7
 model.criterion.num_classes = 7
 # max training iterations
@@ -51,7 +50,7 @@ dataloader.train.num_workers = 16
 # please notice that this is total batch size.
 # surpose you're using 4 gpus for training and the batch size for
 # each gpu is 16/4 = 4
-dataloader.train.total_batch_size = 16
+dataloader.train.total_batch_size = 8
 # dataloader.test.total_batch_size = 16
 
 # dump the testing results into output_dir for visualization

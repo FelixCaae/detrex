@@ -16,7 +16,7 @@ _PREDEFINED_SPLITS = {
     # point annotations without masks
     "sgod_dc_instance_train": (
         "crossdomain_urban/daytime_clear",
-        "crossdomain_urban/annotations/daytime_train.json",
+        "crossdomain_urban/annotations/daytime_train_with_sam_masks.json",
     ),
     "sgod_dc_instance_val": (
         "crossdomain_urban/daytime_clear",

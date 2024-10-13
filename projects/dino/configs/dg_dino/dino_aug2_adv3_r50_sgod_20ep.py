@@ -8,7 +8,7 @@ train = get_config("common/train.py").train
 
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-train.output_dir = "./output/sgod_dinoaug1_adv1_r50_20ep"
+train.output_dir = "./output/sgod_dinoaug2_adv3_r50_20ep"
 dataloader.test.dataset.names="sgod_dc_instance_val"
 # dataloader.test.dataset.names="sgod_nc_instance_val"
 # dataloader.test.dataset.names="sgod_dr_instance_val"

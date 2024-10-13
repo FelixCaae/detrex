@@ -5,10 +5,10 @@ dataloader = get_config("common/data/sgod_detr_corrupt.py").dataloader
 lr_multiplier = get_config("common/sgod_schedule.py").lr_multiplier_20e
 optimizer = get_config("common/optim.py").AdamW
 train = get_config("common/train.py").train
-
+dataloader.train.mapper.mask_on = False
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-train.output_dir = "./output/sgod_dinoaug1_adv1_r50_20ep"
+train.output_dir = "./output/sgod_dinoaug2_adv5_r50_20ep"
 dataloader.test.dataset.names="sgod_dc_instance_val"
 # dataloader.test.dataset.names="sgod_nc_instance_val"
 # dataloader.test.dataset.names="sgod_dr_instance_val"

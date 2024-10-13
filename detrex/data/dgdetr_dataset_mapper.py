@@ -98,12 +98,18 @@ class DGDetrDatasetMapper:
                 image, transforms = T.apply_transform_gens(self.augmentation_with_crop, image)
         #apply corruptions randomly and save the corruption label
         num_corrupt = len(self.corruptions) 
-        corrupt_idx = np.random.randint(0, num_corrupt)
-        # for corruption in self.corruptions[corrupt_idx]:
-        aug_scale = np.random.randint(1, 5)
-        corruption = self.corruptions[corrupt_idx]
-        image = self.acvc.apply_corruption(image,corruption, aug_scale)
-        image = np.array(image)
+        if num_corrupt>0:
+            if np.random.randint(0,2) == 0:
+                corrupt_idx = np.random.randint(0, num_corrupt)
+                # for corruption in self.corruptions[corrupt_idx]:
+                aug_scale = np.random.randint(3, 5)
+                corruption = self.corruptions[corrupt_idx]
+                image = self.acvc.apply_corruption(image,corruption, aug_scale)
+                domain_shift = 1
+            else:
+                domain_shift = 0
+            dataset_dict['domain_shift'] = domain_shift
+        image = np.array(image)            
         image_shape = image.shape[:2]  # h, w
 
         # Pytorch's dataloader is efficient on torch.Tensor due to shared-memory,
@@ -111,11 +117,10 @@ class DGDetrDatasetMapper:
         # Therefore it's important to use torch.Tensor.
         dataset_dict["image"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
 
-        if not self.is_train:
-            # USER: Modify this if you want to keep them for some reason.
-            dataset_dict.pop("annotations", None)
-            return dataset_dict
-
+        # if not self.is_train:
+        #     # USER: Modify this if you want to keep them for some reason.
+        #     dataset_dict.pop("annotations", None)
+        #     return dataset_dict
         if "annotations" in dataset_dict:
             # USER: Modify this if you want to keep them for some reason.
             for anno in dataset_dict["annotations"]:
@@ -129,7 +134,6 @@ class DGDetrDatasetMapper:
                 for obj in dataset_dict.pop("annotations")
                 if obj.get("iscrowd", 0) == 0
             ]
-            instances = utils.annotations_to_instances(annos, image_shape)
+            instances = utils.annotations_to_instances(annos, image_shape, mask_format='bitmask')
             dataset_dict["instances"] = utils.filter_empty_instances(instances)
-        dataset_dict['corrupt_idx'] = corrupt_idx
         return dataset_dict

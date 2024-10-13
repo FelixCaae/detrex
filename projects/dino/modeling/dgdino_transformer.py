@@ -184,7 +184,7 @@ class DINOTransformerDecoder(TransformerLayerSequence):
         intermediate = []
         intermediate_reference_points = []
         for layer_idx, layer in enumerate(self.layers):
-            if not self.training:
+            if not self.training and False:
                 pts = reference_points[0, :, :] 
                 pts = pts.cpu()
                 json.dump(pts.tolist(), open(f'pts_{layer_idx}.json','w'), ensure_ascii=True)
@@ -239,7 +239,7 @@ class DINOTransformerDecoder(TransformerLayerSequence):
         return output, reference_points
 
 
-class DINOTransformer(nn.Module):
+class DGDINOTransformer(nn.Module):
     """Transformer module for DINO
 
     Args:
@@ -256,9 +256,11 @@ class DINOTransformer(nn.Module):
         decoder=None,
         num_feature_levels=4,
         two_stage_num_proposals=900,
+        num_bank =10,
         learnt_init_query=True,
+        dynamic_init_query=False,
     ):
-        super(DINOTransformer, self).__init__()
+        super(DGDINOTransformer, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.num_feature_levels = num_feature_levels
@@ -268,8 +270,13 @@ class DINOTransformer(nn.Module):
 
         self.level_embeds = nn.Parameter(torch.Tensor(self.num_feature_levels, self.embed_dim))
         self.learnt_init_query = learnt_init_query
+        self.dynamic_init_query = dynamic_init_query
         if self.learnt_init_query:
             self.tgt_embed = nn.Embedding(self.two_stage_num_proposals, self.embed_dim)
+        if self.dynamic_init_query:
+            self.num_bank = num_bank
+            self.tgt_embed = nn.Embedding(num_bank *  self.two_stage_num_proposals, self.embed_dim)
+            self.embed_decision_net = nn.Linear(self.embed_dim, num_bank)
         self.enc_output = nn.Linear(self.embed_dim, self.embed_dim)
         self.enc_output_norm = nn.LayerNorm(self.embed_dim)
 
@@ -377,6 +384,7 @@ class DINOTransformer(nn.Module):
         mask_flatten = []
         lvl_pos_embed_flatten = []
         spatial_shapes = []
+    
         for lvl, (feat, mask, pos_embed) in enumerate(
             zip(multi_level_feats, multi_level_masks, multi_level_pos_embeds)
         ):
@@ -391,6 +399,7 @@ class DINOTransformer(nn.Module):
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             feat_flatten.append(feat)
             mask_flatten.append(mask)
+
         feat_flatten = torch.cat(feat_flatten, 1)
         mask_flatten = torch.cat(mask_flatten, 1)
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
@@ -422,9 +431,16 @@ class DINOTransformer(nn.Module):
         output_memory, output_proposals = self.gen_encoder_output_proposals(
             memory, mask_flatten, spatial_shapes
         )
+
         # output_memory: bs, num_tokens, c
         # output_proposals: bs, num_tokens, 4. unsigmoided.
-
+        # if not self.training:
+            # for lvl in range(len(spatial_shapes)):
+            # h,w = spatial_shapes[-1]
+            #     output_memory = output_memory[idx : idx + h*w]
+            # output_memory = output_memory
+            # output_memory = output_memory[:,-3000:]
+            # output_proposals = output_proposals[:,-3000:]
         enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
         enc_outputs_coord_unact = (
             self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
@@ -433,10 +449,72 @@ class DINOTransformer(nn.Module):
         topk = self.two_stage_num_proposals
         topk_proposals = torch.topk(enc_outputs_class.max(-1)[0], topk, dim=1)[1]
 
+        # from torchvision import ops
+        # from detrex.layers import MLP, box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
+        # b, len_q, _ = enc_outputs_coord_unact.shape
+        # iou_list = []
+        # for i in range(b):
+        #     enc_outputs_coord_i = enc_outputs_coord_unact[i].sigmoid()
+        #     gt_coords_i = kwargs['gt_instances'][i]['boxes']
+        #     if len(gt_coords_i)==0:
+        #         iou_list.append(torch.zeros(len(enc_outputs_coord_i), device=enc_outputs_coord_i.device))
+        #     else:
+        #         iou = ops.box_iou(box_cxcywh_to_xyxy(enc_outputs_coord_i), box_cxcywh_to_xyxy(gt_coords_i)).max(dim=-1)[0]
+        #         iou_list.append(iou)
+        # iou_list = torch.stack(iou_list)   
+        # topk_proposals = torch.topk(iou_list, topk, dim=1)[1]
         # extract region proposal boxes
         topk_coords_unact = torch.gather(
             enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)
         )  # unsigmoided.
+        # if not self.training and False:
+        #     import pdb;pdb.set_trace()
+        #     from matplotlib  import pyplot as plt
+        #     from matplotlib.colors import ListedColormap
+        #     from sklearn.decomposition import PCA
+        #     import numpy as np
+        #     #start drawing class segmentation maps
+        #     class_logits = enc_outputs_class[0]
+        #     idx = 0
+        #     cmap  = ListedColormap(['red','green','blue','yellow','purple','cyan','orange'])
+        #     colors = ['red','green','blue','yellow','purple','cyan','orange']
+        #     labels =  ['bus', 'bike', 'car', 'motor', 'person', 'rider', 'truch']
+        #     for lvl in range(len(spatial_shapes)):
+        #         h,w = spatial_shapes[lvl]
+        #         logits = class_logits[idx : idx + h*w]
+        #         score_map = logits.reshape(h,w,-1).max(dim=-1) # h,w x n_class 
+        #         class_map = logits.reshape(h,w,-1).argmax(dim=-1) # h,w x n_class 
+        #         #visualize score map
+        #         plt.figure(figsize=(8, 6))
+        #         plt.imshow(score_map[0].sigmoid().cpu())
+        #         plt.savefig(f'vis_out/scoremap_{lvl}.jpg')
+        #         plt.close()
+        #         #visualize class map
+        #         plt.figure(figsize=(8, 6))
+        #         plt.imshow(class_map.cpu(), cmap=cmap)
+        #         handles = [plt.Rectangle((0,0),1,1, color=color) for color in colors]
+        #         plt.legend(handles, labels, loc='upper center')
+        #         plt.axis('off')
+        #         plt.tight_layout()
+        #         plt.savefig(f'vis_out/clsmap_{lvl}.jpg')
+        #         plt.close()
+        #         #visualize PCA feats
+        #         pca = PCA(n_components=3)
+        #         #feat_flatten, memory, output_memory
+        #         # feats = output_memory[0,idx:idx+h*w].cpu()
+        #         # reduced_feature = pca.fit_transform(feats.numpy())  # 应用 PCA
+        #         # feats = reduced_feature.reshape(h,w,3)
+        #         reduced_feature = pca.fit_transform(output_memory[0].cpu().numpy())  # 应用 PCA
+        #         feats = reduced_feature[idx:idx+h*w]
+        #         feats = feats.reshape(h,w,3)
+        #         feats = (feats - feats.min()) / (feats.max() - feats.min())
+
+        #         plt.figure()
+        #         plt.imshow(feats)
+        #         plt.savefig(f'vis_out/pca_{lvl}.jpg')
+        #         plt.close()
+        #         idx = idx + h*w
+
         reference_points = topk_coords_unact.detach().sigmoid()
         if query_embed[1] is not None:
             reference_points = torch.cat([query_embed[1].sigmoid(), reference_points], 1)
@@ -446,10 +524,19 @@ class DINOTransformer(nn.Module):
         target_unact = torch.gather(
             output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1])
         )
+            #bs,twostage_proposal, embed_dim, 1
+            # target = self.tgt_embed.weight[None].repeat(bs, 1, 1)
         if self.learnt_init_query:
             target = self.tgt_embed.weight[None].repeat(bs, 1, 1)
         else:
             target = target_unact.detach()
+        if self.dynamic_init_query:
+            target_embed = self.tgt_embed.weight.reshape(-1, self.num_bank, self.two_stage_num_proposals, self.embed_dim)
+            target_embed = target_embed.repeat(bs,1,1,1) #bs, banksize, proposalsize, embed_dim
+            decision = self.embed_decision_net(output_memory.mean(dim=1)) # bs, banksize
+            weight = decision.softmax(dim=-1)
+            print(weight)
+            target = (weight.unsqueeze(-1).unsqueeze(-1) * target_embed).mean(dim=1) #bs, proposal, embed_dim
         if query_embed[0] is not None:
             target = torch.cat([query_embed[0], target], 1)
 
@@ -475,4 +562,5 @@ class DINOTransformer(nn.Module):
             inter_references_out,
             target_unact,
             topk_coords_unact.sigmoid(),
+            output_memory,
         )

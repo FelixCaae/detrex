@@ -19,27 +19,33 @@ transform = transforms.Compose([
     transforms.ToTensor(),          # 转换为张量
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # 正则化
 ])
-
-# 加载 ResNet50 预训练模型
-
-model = ResNet(
-        stem =BasicStem(in_channels=3, out_channels=64, norm="FrozenBN"),
-        stages=ResNet.make_default_stages(
-            depth=50,
-            stride_in_1x1=False,
-            norm="FrozenBN",
-        ),
-        out_features=["res3", "res4", "res5"],
-        freeze_at=1)
-# model = models.resnet50(pretrained=True)
-state_dict = torch.load('/gpfsdata/home/caizhi/detrex/output/sgod_dinoaug1_r50_20ep/model_final.pth')['model']
-new_state_dict = {}
-for k,v in state_dict.items():
-    if 'backbone' in k:
-        k = k[9:]
-        new_state_dict[k] = v
-model = model.eval().cuda()  # 使用 eval 模式和 CUDA 加速
-model.load_state_dict(new_state_dict)
+model_type = 'dino'
+if model_type == 'resnet50':
+    # 加载 ResNet50 预训练模型
+    model = ResNet(
+            stem =BasicStem(in_channels=3, out_channels=64, norm="FrozenBN"),
+            stages=ResNet.make_default_stages(
+                depth=50,
+                stride_in_1x1=False,
+                norm="FrozenBN",
+            ),
+            out_features=["res3", "res4", "res5"],
+            freeze_at=1)
+    model = models.resnet50(pretrained=True)
+    state_dict = torch.load('/gpfsdata/home/caizhi/detrex/output/sgod_dinoaug1_r50_20ep/model_final.pth')['model']
+    new_state_dict = {}
+    for k,v in state_dict.items():
+        if 'backbone' in k:
+            k = k[9:]
+            new_state_dict[k] = v
+    model = model.eval().cuda()  # 使用 eval 模式和 CUDA 加速
+    model.load_state_dict(new_state_dict)
+else:
+    dino_model =  torch.hub.load('../CrowdSAM/dinov2',
+                                'dinov2_vitl14',
+                                source='local',pretrained=False).cuda()
+    dino_model.load_state_dict(torch.load('/gpfsdata/home/caizhi/CrowdSAM/weights/dinov2_vitl14_pretrain.pth'))
+    model = dino_model
 # 去掉 ResNet50 最后的全连接层，只提取特征
 # model = torch.nn.Sequential(*list(model.children())[:-1])
 
@@ -70,8 +76,11 @@ for label, ddir in enumerate(domain_dirs):
         
         # 提取特征
         with torch.no_grad():
-            feature = model(img)['res5'].mean(dim=[2,3]).cpu().numpy().flatten()  # 提取并压平特征向量
-        
+            if 'resnet' in model_type:
+                feature = model(img)['res5'].mean(dim=[2,3]).cpu().numpy().flatten()  # 提取并压平特征向量
+            else:
+                feature = model(img).cpu().numpy().flatten()
+                # feature = model(img)['res5'].mean(dim=[2,3]).cpu().numpy().flatten()
         # 保存特征和对应的标签（域）
         features_list.append(feature)
         labels_list.append(label)
@@ -104,7 +113,7 @@ plt.colorbar()
 plt.legend()
 plt.title('t-SNE Visualization of ResNet-50 Features with Legend')
 plt.show()
-plt.savefig('vis_out/tsne.jpg')
+plt.savefig(f'vis_out/{model_type}_tsne.jpg')
 plt.close()
 
 plt.figure(figsize=(10, 6))
@@ -122,5 +131,5 @@ plt.colorbar()
 plt.legend()
 plt.title('UMAP Visualization of ResNet-50 Features with Legend')
 plt.show()
-plt.savefig('vis_out/umap.jpg')
+plt.savefig(f'vis_out/{model_type}_umap.jpg')
 plt.close()

@@ -19,5 +19,7 @@ from .dino_transformer import (
     DINOTransformerDecoder,
     DINOTransformer,
 )
+from .dgdino_transformer import DGDINOTransformer
 from .dino import DINO
 from .dn_criterion import DINOCriterion
+from .dg_dino import DGDINO
