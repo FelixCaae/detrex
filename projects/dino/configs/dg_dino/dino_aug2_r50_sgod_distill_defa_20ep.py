@@ -8,14 +8,14 @@ train = get_config("common/train.py").train
 
 # modify training config
 train.init_checkpoint = "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-train.output_dir = "./output/sgod_dinoaug2_distill_dino_t3_r50_20ep"
+train.output_dir = "./output/sgod_dinoaug2_distill_dino_defa_r50_20ep"
 dataloader.test.dataset.names="sgod_dc_instance_val"
 # dataloader.test.dataset.names="sgod_nc_instance_val"
 # dataloader.test.dataset.names="sgod_dr_instance_val"
 # dataloader.test.dataset.names="sgod_nr_instance_val"
 # dataloader.test.dataset.names="sgod_df_instance_val"
 
-model.distill_dino = True
+model.distill_dino = 'distill_enc_feats_all'
 model.num_classes = 7
 model.criterion.num_classes = 7
 # max training iterations

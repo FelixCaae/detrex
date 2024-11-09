@@ -1,0 +1,2 @@
+ python tools/train_net.py --config-file projects/deformable_detr/configs/deformable_detr_sgod_20ep.py  --num-gpus 8  --eval train.amp.enabled=True
+                                                                                                                                                                 

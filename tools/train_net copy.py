@@ -44,7 +44,7 @@ from detrex.modeling import ema
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
 import warnings
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 class Trainer(SimpleTrainer):
@@ -57,7 +57,6 @@ class Trainer(SimpleTrainer):
         model,
         dataloader,
         optimizer,
-        optimizer_adv=None,
         amp=False,
         clip_grad_params=None,
         grad_scaler=None,
@@ -73,7 +72,7 @@ class Trainer(SimpleTrainer):
             if grad_scaler is None:
                 from torch.cuda.amp import GradScaler
 
-                grad_scaler = GradScaler()
+                grad_scaler = GradScaler(init_scale=128)
         self.grad_scaler = grad_scaler
         
         # set True to use amp training
@@ -81,6 +80,7 @@ class Trainer(SimpleTrainer):
 
         # gradient clip hyper-params
         self.clip_grad_params = clip_grad_params
+
     def run_step(self):
         """
         Implement the standard training logic described above.
@@ -112,6 +112,7 @@ class Trainer(SimpleTrainer):
         wrap the optimizer with your custom `zero_grad()` method.
         """
         self.optimizer.zero_grad()
+
         if self.amp:
             self.grad_scaler.scale(losses).backward()
             if self.clip_grad_params is not None:
@@ -127,7 +128,22 @@ class Trainer(SimpleTrainer):
             # For example, you might want to print the model's parameters
             # or inspect intermediate values to identify the cause of NaNs
             # You can also consider terminating training or taking other corrective actions
-
+        elif self.adv_train:
+            total_loss = losses
+            # total_loss = task_loss - lambda_adv * domain_loss
+            # 反向传播和优化
+            # optimizer_feature.zero_grad()
+            # optimizer_task.zero_grad()
+            # optimizer_domain.zero_grad()
+            losses.backward()
+            if self.clip_grad_params is not None:
+                self.clip_grads(self.model.parameters())
+            self.optimizer.step()
+            # 对抗性优化：最小化特征提取器和任务分类器的损失
+            domain_loss = -loss_dict['adv_loss']
+            # 最大化域分类器的损失 (反转域分类器的梯度)
+            domain_loss.backward()
+            optimizer_domain.step()
         else:
             losses.backward()
             if self.clip_grad_params is not None:
@@ -135,7 +151,8 @@ class Trainer(SimpleTrainer):
             self.optimizer.step()
         if self.amp:
             pass
-      
+            # self._write_metrics({'loss_scale':self.grad_scaler.get_scale()}, data_time)
+            # loss_dict.update({'loss_scale': torch.tensor(self.grad_scaler.get_scale())})
         self._write_metrics(loss_dict, data_time)
 
     def clip_grads(self, params):
@@ -220,6 +237,7 @@ def do_train(args, cfg):
     # instantiate optimizer
     cfg.optimizer.params.model = model
     optim = instantiate(cfg.optimizer)
+
     # build training loader
     train_loader = instantiate(cfg.dataloader.train)
     
@@ -314,10 +332,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # args = default_argument_parser().parse_args()
-    argparser = default_argument_parser()
-    argparser.add_argument('--adv_train', action='store_true')
-    args = argparser.parse_args()
+    args = default_argument_parser().parse_args()
     launch(
         main,
         args.num_gpus,

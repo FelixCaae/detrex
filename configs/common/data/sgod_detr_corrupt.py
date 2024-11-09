@@ -13,15 +13,16 @@ from detectron2.evaluation import COCOEvaluator
 from detrex.data import DGDetrDatasetMapper, DetrDatasetMapper
 
 dataloader = OmegaConf.create()
-
+a = 768
+b = 1111
 dataloader.train = L(build_detection_train_loader)(
     dataset=L(get_detection_dataset_dicts)(names="sgod_dc_instance_train"),
     mapper=L(DGDetrDatasetMapper)(
         augmentation=[
             L(T.RandomFlip)(),
             L(T.ResizeShortestEdge)(
-                short_edge_length=(480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800),
-                max_size=1333,
+                short_edge_length=(480, 512, 544, 576, 608, 640, 672, 704, 736, 768, a),
+                max_size=b,
                 sample_style="choice",
             ),
         ],
@@ -36,8 +37,8 @@ dataloader.train = L(build_detection_train_loader)(
                 crop_size=(384, 600),
             ),
             L(T.ResizeShortestEdge)(
-                short_edge_length=(480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800),
-                max_size=1333,
+                short_edge_length=(480, 512, 544, 576, 608, 640, 672, 704, 736, 768, a),
+                max_size=b,
                 sample_style="choice",
             ),
         ],
