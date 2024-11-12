@@ -20,6 +20,8 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Function
+import torchvision.transforms as transforms
 
 from detrex.layers import MLP, box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 from detrex.utils import inverse_sigmoid
@@ -28,9 +30,27 @@ from detectron2.modeling import detector_postprocess
 from detectron2.structures import Boxes, ImageList, Instances
 from detectron2.utils.events import get_event_storage
 from detectron2.data.detection_utils import convert_image_to_rgb
+class GradientReversalFunction(Function):
+    @staticmethod
+    def forward(ctx, x, lambda_factor):
+        ctx.lambda_factor = lambda_factor
+        return x
 
+    @staticmethod
+    def backward(ctx, grad_output):
+        # 在反向传播时，反转梯度
+        return -ctx.lambda_factor * grad_output, None
 
-class DINO(nn.Module):
+def grad_reverse(x, lambda_factor=1.0):
+    return GradientReversalFunction.apply(x, lambda_factor)
+
+# class DomainClassifier(nn.module):
+#     def __init__ (self, ):
+#         super(self).__init__()
+#     def forward(self, feats):
+#         pass
+
+class DGDINODistillFeatsOnEnc(nn.Module):
     """Implement DAB-Deformable-DETR in `DAB-DETR: Dynamic Anchor Boxes are Better Queries for DETR
     <https://arxiv.org/abs/2203.03605>`_.
 
@@ -74,6 +94,9 @@ class DINO(nn.Module):
         dn_number: int = 100,
         label_noise_ratio: float = 0.2,
         box_noise_scale: float = 1.0,
+        adv_train_loss = False,
+        class_reg_loss = False,
+        distill_dino = False,
         input_format: Optional[str] = "RGB",
         vis_period: int = 0,
     ):
@@ -81,8 +104,7 @@ class DINO(nn.Module):
         # define backbone and position embedding module
         self.backbone = backbone
         self.position_embedding = position_embedding
-        for param in self.backbone.parameters():
-            param.requires_grad = False
+
         # define neck module
         self.neck = neck
 
@@ -129,8 +151,21 @@ class DINO(nn.Module):
         num_pred = transformer.decoder.num_layers + 1
         self.class_embed = nn.ModuleList([copy.deepcopy(self.class_embed) for i in range(num_pred)])
         self.bbox_embed = nn.ModuleList([copy.deepcopy(self.bbox_embed) for i in range(num_pred)])
+        # self.domain_embed = nn.ModuleList([copy.deepcopy(self.bbox_embed) for i in range(4)])
         nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
 
+        #adv training module
+        self.adv_train_loss = adv_train_loss
+        if adv_train_loss:
+            self.domain_classifier = MLP(256, 256, 2, 3)      
+            self.domain_classifier = nn.ModuleList([copy.deepcopy(self.domain_classifier) for i in range(4)])
+
+        #class-prototypes reguralization
+        self.class_reg_loss = class_reg_loss
+        if class_reg_loss:
+            prototypes = np.load('./dino_features.npy',allow_pickle=True)
+            self.prototypes = torch.tensor(prototypes)
+            self.embed_proj = MLP(256, 256, 1024, 3)
         # two-stage
         self.transformer.decoder.class_embed = self.class_embed
         self.transformer.decoder.bbox_embed = self.bbox_embed
@@ -141,13 +176,34 @@ class DINO(nn.Module):
 
         # set topk boxes selected for inference
         self.select_box_nums_for_evaluation = select_box_nums_for_evaluation
-
         # the period for visualizing training samples
         self.input_format = input_format
         self.vis_period = vis_period
         if vis_period > 0:
             assert input_format is not None, "input_format is required for visualization!"
-
+        self.distill_dino = distill_dino
+        if distill_dino:
+            #load dino model 
+            dino_model = torch.hub.load('../CrowdSAM/dinov2', 'dinov2_vitl14',  source='local', pretrained=False).cuda()
+            dino_model.load_state_dict(torch.load('/gpfsdata/home/caizhi/CrowdSAM/weights/dinov2_vitl14_pretrain.pth'))
+            # freeze dino's parameters
+            for param in dino_model.parameters():
+                param.requires_grad = False
+            #define transform for dino
+            transform = transforms.Compose([
+                transforms.Resize((560, 560)),  # R50 模型的输入尺寸
+                transforms.ToTensor(),          # 转换为张量
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # 正则化
+            ])
+            #define a projecion layer for dino
+            # self.dino_proj = MLP(1024, 256, 256, 2)
+            #define a projection layer for student
+            self.stu_proj = MLP(256, 256, 1024, 3)
+            self.stu_proj = nn.ModuleList([copy.deepcopy(self.stu_proj) for i in range(4)])
+            #define a teacher classification head
+            self.class_embed_teacher = self.class_embed[0] # MLP(256, 256, num_classes, 2)
+            self.transform = transform
+            self.dino_model = dino_model
 
     def forward(self, batched_inputs):
         """Forward function of `DINO` which excepts a list of dict as inputs.
@@ -175,17 +231,39 @@ class DINO(nn.Module):
                             dictionnaries containing the two above keys for each decoder layer.
         """
         images = self.preprocess_image(batched_inputs)
+        if self.distill_dino and self.training:
+            with torch.no_grad():
+                bs = images.tensor.shape[0]
+                resized_tensor = F.interpolate(images.tensor, (560, 560))
+                features_dict = self.dino_model.forward_features(resized_tensor)
+                dino_feats = features_dict['x_norm_patchtokens']#.view(bs, 40, 40, -1).cpu()  # 提取patch tokens
+            # dino_feats = self.dino_proj(dino_feats)
 
         if self.training:
             batch_size, _, H, W = images.tensor.shape
+            # create a fg_masks for adv training
+            fg_masks = images.tensor.new_zeros(batch_size, H, W)
             img_masks = images.tensor.new_ones(batch_size, H, W)
+            domain_labels = []
             for img_id in range(batch_size):
                 img_h, img_w = batched_inputs[img_id]["instances"].image_size
                 img_masks[img_id, :img_h, :img_w] = 0
+
+                # set one for fg mask and set zero for bg
+                # if hasattr( batched_inputs[img_id]['instances'], 'gt_masks'):
+                    # fg_mask = batched_inputs[img_id]['instances'].gt_masks.tensor.any(dim=0)
+                for box in  batched_inputs[img_id]['instances'].gt_boxes:
+                    box = box.int()
+                    fg_masks[img_id, box[1]:box[3], box[0]:box[2]] = 1
+            
+                domain_labels.append(batched_inputs[img_id]['domain_shift'])
+            domain_labels = torch.tensor(domain_labels)
+            assert len(domain_labels) > 0
+
         else:
             batch_size, _, H, W = images.tensor.shape
             img_masks = images.tensor.new_zeros(batch_size, H, W)
-
+            domain_labels = None
         # original features
         features = self.backbone(images.tensor)  # output feature dict
 
@@ -219,6 +297,8 @@ class DINO(nn.Module):
             input_query_label, input_query_bbox, attn_mask, dn_meta = None, None, None, None
         query_embeds = (input_query_label, input_query_bbox)
 
+        gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+        targets = self.prepare_targets(gt_instances)
         # feed into transformer
         (
             inter_states,
@@ -226,15 +306,25 @@ class DINO(nn.Module):
             inter_references,
             enc_state,
             enc_reference,  # [0..1]
+            output_memory,
         ) = self.transformer(
             multi_level_feats,
             multi_level_masks,
             multi_level_position_embeddings,
             query_embeds,
             attn_masks=[attn_mask, None],
+            gt_instances = targets
         )
+        adv_logits = []
+        shapes = [feat.shape[2:] for feat in multi_level_feats]
+        idx = 0
+        if self.adv_train_loss and self.training:
+            for lvl,(h,w) in enumerate(shapes):
+                memory_lvl = output_memory[:, idx:idx+h*w,:]
+                adv_logits_lvl = self.domain_classifier[lvl](grad_reverse(memory_lvl))
+                adv_logits.append(adv_logits_lvl.reshape(-1,h,w,2))
         # hack implementation for distributed training
-        inter_states[0] += self.label_enc.weight[0, 0] * 0.0
+        inter_states[0] += self.label_enc.weight[0, 0] * 0.0 + self.transformer.tgt_embed.weight[0,0] * 0.0
 
         # Calculate output coordinates and classes.
         outputs_classes = []
@@ -275,7 +365,6 @@ class DINO(nn.Module):
         interm_coord = enc_reference
         interm_class = self.transformer.decoder.class_embed[-1](enc_state)
         output["enc_outputs"] = {"pred_logits": interm_class, "pred_boxes": interm_coord}
-
         if self.training:
             # visualize training samples
             if self.vis_period > 0:
@@ -289,6 +378,32 @@ class DINO(nn.Module):
             # compute loss
             loss_dict = self.criterion(output, targets, dn_meta)
             weight_dict = self.criterion.weight_dict
+
+            if self.adv_train_loss:
+                adv_loss_dict = self.adv_loss(adv_logits, domain_labels, fg_masks, img_masks.bool())
+                loss_dict.update(adv_loss_dict)
+                weight_dict['adv_loss'] = 1.0
+            if self.class_reg_loss:
+                inter_states_proj = self.embed_proj(inter_states)
+                cls_reg_loss_dict = self.reg_loss(inter_states_proj, outputs_class, self.prototypes)
+                loss_dict.update(cls_reg_loss_dict)
+                weight_dict['class_reg_loss'] = 1.0
+            if self.distill_dino:
+                shapes = [feat.shape[2:] for feat in multi_level_feats]
+                #predict logits on teacher
+                tch_feat = dino_feats
+                trans_stu_feat_list = []
+                for s in shapes:
+                   for shape in shapes:
+                    h,w = shape
+                    stu_feats = output_memory[:,idx-h*w:idx,:]
+                # mse_loss = F.mse_loss(trans_stu_feat, tch_feat)
+                # teacher_loss = F.binary_cross_entropy_with_logits(tch_logits, tch_targets)
+                distill_loss = lambda_ce * ce_loss #+  lambda_mse * mse_loss
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+                # weight_dict['teacher_loss'] = 1.0
+            # assert not torch.isnan(loss_dict['adv_loss']).any()
             for k in loss_dict.keys():
                 if k in weight_dict:
                     loss_dict[k] *= weight_dict[k]
@@ -547,7 +662,6 @@ class DINO(nn.Module):
             result.pred_classes = labels_per_image
             results.append(result)
         return results
-
     def prepare_targets(self, targets):
         new_targets = []
         for targets_per_image in targets:

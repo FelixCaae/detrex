@@ -30,6 +30,8 @@ from detectron2.modeling import detector_postprocess
 from detectron2.structures import Boxes, ImageList, Instances
 from detectron2.utils.events import get_event_storage
 from detectron2.data.detection_utils import convert_image_to_rgb
+from scipy.optimize import linear_sum_assignment
+
 class GradientReversalFunction(Function):
     @staticmethod
     def forward(ctx, x, lambda_factor):
@@ -44,6 +46,27 @@ class GradientReversalFunction(Function):
 def grad_reverse(x, lambda_factor=1.0):
     return GradientReversalFunction.apply(x, lambda_factor)
 
+def forward_features(dino_model, x, step=6, masks=None):
+    if isinstance(x, list):
+        return dino_model.forward_features_list(x, masks)
+
+    x = dino_model.prepare_tokens_with_masks(x, masks)
+    interm_feats = []
+    for lvl,blk in enumerate(dino_model.blocks):
+        x = blk(x)
+        if lvl % step==0 and lvl != 0:
+            interm_feats.append(x)
+
+    interm_feats = [ x[:,dino_model.num_register_tokens + 1 :] for x in interm_feats]
+    x_norm = dino_model.norm(x)
+    return {
+        "x_norm_clstoken": x_norm[:, 0],
+        "x_norm_regtokens": x_norm[:, 1 : dino_model.num_register_tokens + 1],
+        "x_norm_patchtokens": x_norm[:, dino_model.num_register_tokens + 1 :],
+        "x_prenorm": x,
+        "x_norm_intermtokens": interm_feats,
+        "masks": masks,
+    }
 # class DomainClassifier(nn.module):
 #     def __init__ (self, ):
 #         super(self).__init__()
@@ -97,12 +120,16 @@ class DGDINO(nn.Module):
         adv_train_loss = False,
         class_reg_loss = False,
         distill_dino = False,
+        freeze_backbone=False,
         input_format: Optional[str] = "RGB",
         vis_period: int = 0,
     ):
         super().__init__()
         # define backbone and position embedding module
         self.backbone = backbone
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
         self.position_embedding = position_embedding
 
         # define neck module
@@ -182,13 +209,14 @@ class DGDINO(nn.Module):
         if vis_period > 0:
             assert input_format is not None, "input_format is required for visualization!"
         self.distill_dino = distill_dino
-        if distill_dino:
-            dino_model = torch.hub.load('../CrowdSAM/dinov2',
-                                'dinov2_vitl14',
-                                source='local', pretrained=False).cuda()
+        if distill_dino != None:
+            #load dino model 
+            dino_model = torch.hub.load('./dinov2', 'dinov2_vitl14',  source='local', pretrained=False).cuda()
+            dino_model.load_state_dict(torch.load('./dinov2/dinov2_vitl14_pretrain.pth'))
+            # freeze dino's parameters
             for param in dino_model.parameters():
                 param.requires_grad = False
-            dino_model.load_state_dict(torch.load('/gpfsdata/home/caizhi/CrowdSAM/weights/dinov2_vitl14_pretrain.pth'))
+            #define transform for dino
             transform = transforms.Compose([
                 transforms.Resize((560, 560)),  # R50 模型的输入尺寸
                 transforms.ToTensor(),          # 转换为张量
@@ -196,7 +224,39 @@ class DGDINO(nn.Module):
             ])
             self.transform = transform
             self.dino_model = dino_model
-            self.dino_proj = MLP(256, 256, 1024, 3)
+
+        if distill_dino == 'distill_enc_feats_all':
+            self.stu_proj = MLP(256, 256, 1024, 3)
+            self.stu_proj =  nn.ModuleList([copy.deepcopy(self.stu_proj) for i in range(4)])
+            self.tch_norm = nn.LayerNorm(1024)
+            self.tch_norm =  nn.ModuleList([copy.deepcopy(self.tch_norm) for i in range(3)])
+        elif distill_dino == 'distill_enc_feats':
+            self.stu_proj = MLP(256, 256, 1024, 3)
+        elif distill_dino == 'distill_enc_feats_with_pool':
+            self.stu_proj = nn.Linear(256, 1024)
+        elif distill_dino == 'distill_enc_feats_with_pool_proj':
+            self.stu_proj = nn.Linear(256,256)
+            # self.tch_proj = nn.Linear(1024,256) 
+            # self.tch_proj.load_state_dict(torch.load('proj.pth'))
+        elif distill_dino == 'distill_enc_feats_with_pool_r101':
+            self.stu_proj = MLP(256, 256, 2048, 3)#nn.Linear(256, 2048)
+        elif distill_dino == 'distill_enc_feats_clip_dino':
+            self.stu_proj_1 = MLP(256, 256, 1024,3)
+            self.stu_proj_2 = MLP(256, 256, 512, 3)
+ 
+        elif distill_dino == 'distill_enc_feats_whitened':
+            self.stu_proj = MLP(256, 256, 1024, 3)
+        elif distill_dino == 'distill_enc_feats_channel_topk' or  distill_dino == 'distill_enc_feats_channel_randk':
+            self.stu_proj = MLP(256, 256, 256, 3)
+            self.rand_k = np.random.choice(np.arange(1024),256, replace=False)
+        elif distill_dino == 'distill_enc_feats_with_ot':
+            self.stu_proj = MLP(256, 256, 1024, 3)
+        else:
+            raise NotImplementedError
+            # self.dino_proj = MLP(1024, 256, 256, 2)
+            #define a projection layer for student
+            #define a teacher classification head
+            # self.class_embed_teacher = self.class_embed[0] # MLP(256, 256, num_classes, 2)
     def reg_loss(self, state_proj, class_logits, prototypes, topk=100):
         #remove denosing group 
         state_proj = state_proj[:,:,-900:,:]
@@ -266,13 +326,37 @@ class DGDINO(nn.Module):
                             dictionnaries containing the two above keys for each decoder layer.
         """
         images = self.preprocess_image(batched_inputs)
-        if self.distill_dino and self.training:
-            with torch.no_grad():
-                bs = images.tensor.shape[0]
-                resized_tensor = F.interpolate(images.tensor, (560, 560))
-                features_dict = self.dino_model.forward_features(resized_tensor)
-                dino_feats = features_dict['x_norm_patchtokens']#.view(bs, 40, 40, -1).cpu()  # 提取patch tokens
+        data_root = './datasets/crossdomain_urban/daytime_clear/'
+        if self.distill_dino != None and self.training:
+            # with torch.no_grad():
+            #     bs = images.tensor.shape[0]
+            #     resized_tensor = F.interpolate(images.tensor, (560, 560))
+            #     features_dict = forward_features(self.dino_model, resized_tensor)
             # dino_feats = self.dino_proj(dino_feats)
+            import os
+            dino_feats = []
+            clip_feats = []
+            r101_feats = []
+            for i in batched_inputs:
+                feats_path = os.path.join(data_root, 'dino_feats', str(i['image_id']) + '_proj.npy')
+                x = np.load(feats_path)
+                x = torch.tensor(x.astype(np.float32))
+                import pdb;pdb.set_trace()
+                dino_feats.append(x)
+            for i in batched_inputs:
+                feats_path = os.path.join(data_root, 'clip_feats', str(i['image_id']) + '_clip.npy')
+                x = np.load(feats_path)
+                x = torch.tensor(x.astype(np.float32))
+                clip_feats.append(x)
+            for i in batched_inputs:
+                feats_path = os.path.join(data_root, 'r101_feats', str(i['image_id']) + '.npy')
+                x = np.load(feats_path)
+                x = torch.tensor(x.astype(np.float32))
+                r101_feats.append(x)
+
+            dino_feats =  torch.cat(dino_feats, dim=0)
+            clip_feats =  torch.stack(clip_feats, dim=0)
+            r101_feats = torch.cat(r101_feats, dim=0)
 
         if self.training:
             batch_size, _, H, W = images.tensor.shape
@@ -423,32 +507,248 @@ class DGDINO(nn.Module):
                 cls_reg_loss_dict = self.reg_loss(inter_states_proj, outputs_class, self.prototypes)
                 loss_dict.update(cls_reg_loss_dict)
                 weight_dict['class_reg_loss'] = 1.0
-            if self.distill_dino:
-                shapes = [feat.shape[2:] for feat in multi_level_feats]
+                  # proj_tch_feat = self.dino_proj(tch_feat)
+            # tch_logits = self.class_embed_teacher(proj_tch_feat)
+
+            #predict logits on student               
+            # stu_feats_all = []
+            # stu_logits_all = []
+            # idx = output_memory.shape[1]
+
+                #interpolate student logits to the teacher's shape
+                # stu_logits = self.class_embed[0](stu_feats)
+                # stu_feats_all.append(stu_feats)
+                # stu_logits_all.append(stu_logits)
+            # #predict logits of student
+            # trans_stu_feat = self.stu_proj(stu_feat)
+
+            #fill labels to the targets
+            # bs= len(targets)
+            # tch_targets = torch.zeros_like(tch_logits).reshape(bs, 40, 40, -1)
+            # for bs_idx in range(bs):
+            #     for label, bbox in zip(targets[bs_idx]['labels'], targets[bs_idx]['boxes']):
+            #         x,y,w,h = (bbox * 40).int()
+            #         w, h = max(w,1), max(h,1)
+            #         tch_targets[bs_idx, y:y+h, x:x+w, label] = 1
+            # tch_targets = tch_targets.flatten(1,2)
+            
+            # #compute loss
+            # ce_loss = 0
+            # tch_logits = tch_logits.reshape(bs, 40, 40, -1).permute(0,3,1,2)
+            # for stu_logits, shape in zip(stu_logits_all, shapes):
+            #     h,w = shape
+            #     tch_logits_lvl = F.interpolate(tch_logits, (h, w), mode = 'bilinear').flatten(2).permute(0,2,1)
+            #     ce_loss += F.binary_cross_entropy_with_logits(stu_logits, tch_logits_lvl.softmax(dim=-1) / T)                
+            # # mse_loss = F.mse_loss(trans_stu_feat, tch_feat)
+            # # teacher_loss = F.binary_cross_entropy_with_logits(tch_logits, tch_targets)
+            # distill_loss = lambda_ce * ce_loss #+  lambda_mse * mse_loss
+            #compute distillation loss
+   
+            if self.distill_dino == 'distill_enc_feats':
+                # dino_feats = features_dict['x_norm_patchtokens']
                 h,w = shapes[-1]
-                #resize final_feat to 40, 40
-                final_feat = output_memory[:,-h*w:,:]
-                final_feat = self.dino_proj(final_feat)
-                final_feat = final_feat.reshape(bs, h, w, -1).permute(0,3,1,2)
-                final_feat = F.interpolate(final_feat, (40, 40), mode = 'bilinear').flatten(2).permute(0,2,1)
-                distill_loss = F.mse_loss(dino_feats, final_feat)
-                # from matplotlib import pyplot as plt
-                # import pdb;pdb.set_trace()
-                # from sklearn.decomposition import PCA
-                # pca = PCA(n_components=3)
-                # final_feat_reduce = pca.fit_transform(final_feat.reshape(1600,-1).detach().cpu())
-                # final_feat_reduce = (final_feat_reduce - final_feat_reduce.min()) / (final_feat_reduce.max() - final_feat_reduce.min())
-                # plt.imshow(final_feat_reduce.reshape(40,40,3))
-                # plt.savefig('final_feat_pca.jpg')
-
-                # pca = PCA(n_components=3)
-                # final_feat_reduce = pca.fit_transform(dino_feats.reshape(1600,-1).detach().cpu())
-                # final_feat_reduce = (final_feat_reduce - final_feat_reduce.min()) / (final_feat_reduce.max() - final_feat_reduce.min())
-                # plt.imshow(final_feat_reduce.reshape(40,40,3))
-                # plt.savefig('dino_feat_pca.jpg')
-
-                loss_dict.update({'distill_loss': distill_loss})
+                bs = len(batched_inputs)
+                tch_feat = dino_feats.reshape(bs, 40, 40, -1).permute(0,3,1,2)
+                tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat.cuda())
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
                 weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_with_pool':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                tch_feat = dino_feats.reshape(bs, -1, 1024).mean(dim=1, keepdims=True) # bs, 1, hw 
+                # tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat.cuda())
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_with_pool_proj':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                tch_feat = dino_feats.reshape(bs, -1, 256).mean(dim=1, keepdims=True)
+                # tch_feat = self.tch_proj(tch_feat.cuda())
+                tch_feat = tch_feat.cuda()
+                 # bs, 1, hw 
+                # tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat)
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_with_pool_r101':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                tch_feat = r101_feats.reshape(bs, -1, 2048).mean(dim=1, keepdims=True) # bs, 1, hw 
+                # tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat.cuda())
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_clip_dino':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                tch_feat_1 = dino_feats.reshape(bs,  1024)# bs, 1, c1 
+                tch_feat_2 = clip_feats.reshape(bs,  512) # bs, 1, c2
+
+                stu_feats = output_memory[:,-h*w:,:].mean(dim=1)
+                stu_feats_proj_1 = self.stu_proj_1(stu_feats)
+                stu_feats_proj_2 = self.stu_proj_2(stu_feats)                
+                loss_mse = F.mse_loss(stu_feats_proj_1, tch_feat_1.cuda()) +  F.mse_loss(stu_feats_proj_2, tch_feat_2.cuda())
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_whitened':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                # whiten 
+                dino_feats = dino_feats.cuda()
+                import pdb;pdb.set_trace()
+                dino_feats = (dino_feats - dino_feats.mean(dim=[0,1,2], keepdims=True)) / (dino_feats.std(dim=[0,1,2], keepdims=True))
+                tch_feat = dino_feats.reshape(bs, 40, 40, -1).permute(0,3,1,2)
+                tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat)
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_channel_topk':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                dino_feats = dino_feats.cuda().topk(256, dim=-1)[0]
+                tch_feat = dino_feats.reshape(bs, 40, 40, -1).permute(0,3,1,2)
+                tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat)
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_channel_randk':
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                bs = len(batched_inputs)
+                dino_feats = dino_feats.cuda()[..., self.rand_k]
+                tch_feat = dino_feats.reshape(bs, 40, 40, -1).permute(0,3,1,2)
+                tch_feat = F.interpolate(tch_feat, (h,w)).permute(0,2,3,1).flatten(1,2)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                loss_mse = F.mse_loss(stu_feats_proj, tch_feat)
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+
+            elif self.distill_dino == 'distill_enc_feats_all':
+                interm_feats = features_dict['x_norm_intermtokens']
+                normed_interm_feats = []
+                for feat, ln in zip(interm_feats, self.tch_norm):
+                    feat = ln (feat)
+                    normed_interm_feats.append(feat)
+                dino_feats = normed_interm_feats + [features_dict['x_norm_patchtokens']]
+                shapes = [feat.shape[2:] for feat in multi_level_feats]
+                #predict logits on teacher
+                loss_mse = 0
+                stu_feats_proj_list = []
+                idx = output_memory.shape[1]
+                #iterate through reversed order
+                dino_feats = dino_feats[::-1]
+                for lvl, shape in enumerate(shapes):
+                    h,w = shape
+                    tch_feat = dino_feats[lvl].reshape(bs, 40, 40, -1).permute(0,3,1,2)
+                    tch_feat_lvl = F.interpolate(tch_feat, (h, w), mode = 'bilinear').flatten(2).permute(0,2,1)
+                    stu_feats = output_memory[:,idx-h*w:idx,:]
+                    stu_feats_proj = self.stu_proj[lvl](stu_feats)
+                    loss_mse += F.mse_loss(stu_feats_proj, tch_feat_lvl)
+                    idx -= h*w
+                lambda_mse = 1
+                distill_loss = lambda_mse * loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+            elif self.distill_dino == 'distill_enc_feats_with_ot':
+                bs = len(batched_inputs)
+                # dino_feats = features_dict['x_norm_patchtokens']
+                h,w = shapes[-1]
+                tch_feat = dino_feats.reshape(bs, 40, 40, -1).permute(0,3,1,2).cuda()
+                tch_feat = F.interpolate(tch_feat, (h, w), mode = 'bilinear').flatten(2).permute(0,2,1)
+                stu_feats = output_memory[:,-h*w:,:]
+                stu_feats_proj = self.stu_proj(stu_feats)
+                with torch.no_grad():
+                    rep_cost = 1 - F.cosine_similarity(stu_feats_proj.flatten(0,1).unsqueeze(1), tch_feat.flatten(0,1).unsqueeze(0), dim=-1)  
+                grid_y, grid_x = torch.meshgrid(torch.arange(h), torch.arange(w))
+                coords = torch.stack([grid_x, grid_y], dim=-1).flatten(0,1)
+                dist = torch.square(coords.unsqueeze(1) - coords.unsqueeze(0)).sum(dim=-1)
+                # gaussian_dist = /(-dist/dist.max())
+                dist_cost = dist/dist.max()
+                cost = 0.5 * dist_cost + rep_cost.cpu()
+                src_ind, tgt_ind = linear_sum_assignment(cost)
+
+                visualize = False
+                if visualize:
+                    with torch.no_grad():
+                        from matplotlib import pyplot as plt
+                        plt.subplot(1,3,1)
+                        plt.imshow(resized_tensor[0].permute(1,2,0).cpu())
+                        plt.subplot(1,3,2)
+                        plt.imshow(stu_feats_proj.reshape(h,w,1024).max(dim=-1)[0].cpu())
+                        plt.subplot(1,3,3)
+                        plt.imshow(tch_feat.reshape(h,w,1024).max(dim=-1)[0].cpu())
+                        plt.savefig('test.jpg')
+                        plt.close()
+                        #
+
+                    points1 = torch.stack([grid_x, grid_y], dim=-1)  # 第一个图的点
+                    points2 =  torch.stack([grid_x + w + 5, grid_y], dim=-1)  # 第二个图的点，偏移一点
+
+                    # 假设的匹配关系，直接按相同索引进行匹配
+
+                    # 创建绘图
+                    fig, ax = plt.subplots()
+
+                    # 绘制第一个图的红色圆圈
+                    for i in range(h):
+                        for j in range(w):
+                            ax.add_artist(plt.Circle(points1[i, j], 0.3, color='red', fill=False))
+                    for i in range(h):
+                        for j in range(w):
+                            ax.add_artist(plt.Circle(points2[i, j], 0.3, color='blue', fill=False))
+                    # 画匹配的绿线
+                    for s,t in zip(src_ind, tgt_ind):
+                        if s != t:
+                            point1 = points1[ s // w, s % w ]
+                            point2 = points2[ t // w, t % w]
+                            ax.plot([point1[0], point2[0]], [point1[1], point2[1]], color='green')
+
+                    # 设置显示范围
+                    ax.set_xlim(0, 30)
+                    ax.set_ylim(0, 30)
+                    ax.set_aspect('equal')
+
+                    # 显示图形
+                    plt.show()
+                    plt.savefig('test_match.jpg')
+                    import pdb;pdb.set_trace()
+
+                #hack implementation only for bs=1
+                loss_mse = F.mse_loss(stu_feats_proj[0,src_ind], tch_feat[0,tgt_ind])
+                distill_loss = loss_mse
+                loss_dict.update({'distill_loss': distill_loss})#, 'teacher_loss': teacher_loss})
+                weight_dict['distill_loss'] = 1.0
+
+                # weight_dict['teacher_loss'] = 1.0
             # assert not torch.isnan(loss_dict['adv_loss']).any()
             for k in loss_dict.keys():
                 if k in weight_dict:
