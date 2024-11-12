@@ -1,5 +1,7 @@
-
-
+*.jpg
+*.json
+*.png
+dataset
 # auto generated file at installation
 detrex/config/configs
 detrex/version.py
