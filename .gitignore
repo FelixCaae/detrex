@@ -1,7 +1,12 @@
+<<<<<<< HEAD
 *.jpg
 *.json
 *.png
 datasets
+=======
+output
+
+>>>>>>> 0e2831ef088cbe02cfa7c88bb8dc0d6b5539aed9
 # auto generated file at installation
 detrex/config/configs
 detrex/version.py

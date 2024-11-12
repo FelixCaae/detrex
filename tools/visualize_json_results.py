@@ -14,7 +14,7 @@ from detectron2.structures import Boxes, BoxMode, Instances
 from detectron2.utils.file_io import PathManager
 from detectron2.utils.logger import setup_logger
 from detectron2.utils.visualizer import Visualizer
-
+import detrex
 
 def create_instances(predictions, image_size):
     ret = Instances(image_size)
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     if hasattr(metadata, "thing_dataset_id_to_contiguous_id"):
 
         def dataset_id_map(ds_id):
-            return metadata.thing_dataset_id_to_contiguous_id[ds_id]
+            return 0 #metadata.thing_dataset_id_to_contiguous_id[ds_id]
 
     elif "lvis" in args.dataset:
         # LVIS results are in the same format as COCO results, but have a different

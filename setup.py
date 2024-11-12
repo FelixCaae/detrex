@@ -211,9 +211,8 @@ if __name__ == "__main__":
 
     with open("LICENSE", "r", encoding="utf-8") as f:
         license = f.read()
-
+    print(get_extensions())
     write_version_file()
-
     setup(
         name="detrex",
         version="0.3.0",
@@ -221,7 +220,7 @@ if __name__ == "__main__":
         url="https://github.com/rentainhe/detrex",
         description="IDEA open source toolbox for transformer-based instance recognition tasks",
         license=license,
-        install_requires=parse_requirements("requirements.txt"),
+        # install_requires=parse_requirements("requirements.txt"),
         packages=find_packages(
             exclude=(
                 "configs",

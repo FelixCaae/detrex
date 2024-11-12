@@ -61,6 +61,7 @@ class DetrDatasetMapper:
         augmentation_with_crop,
         is_train=True,
         mask_on=False,
+        score_threshold=0,
         img_format="RGB",
     ):
         self.mask_on = mask_on
@@ -74,7 +75,7 @@ class DetrDatasetMapper:
 
         self.img_format = img_format
         self.is_train = is_train
-
+        self.score_thresh = score_threshold
     def __call__(self, dataset_dict):
         """
         Args:
@@ -115,11 +116,14 @@ class DetrDatasetMapper:
                 anno.pop("keypoints", None)
 
             # USER: Implement additional transformations if you have other types of data
+            def filter_thresh(obj):
+                return [item for item in obj if item['score'] > self.score_thresh]
             annos = [
                 utils.transform_instance_annotations(obj, transforms, image_shape)
                 for obj in dataset_dict.pop("annotations")
                 if obj.get("iscrowd", 0) == 0
             ]
+            annos = filter_thresh(annos) if 'score' in annos[0].keys() else annos
             instances = utils.annotations_to_instances(annos, image_shape)
             dataset_dict["instances"] = utils.filter_empty_instances(instances)
         return dataset_dict
